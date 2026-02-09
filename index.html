@@ -82,7 +82,7 @@
       </div>
     </div>
 
-    <h2>メッセージ作成・送信（デモ）</h2>
+    <h2>メッセージ作成・送信</h2>
 
     <div class="row">
       <div class="col">
@@ -97,7 +97,30 @@
       </div>
 
       <div class="col">
-        <h3>送信対象（AND / OR）</h3>
+        <h3>送信対象（AND/OR）</h3>
+        <div class="muted">
+          ・グループ内は <b>OR</b>（いずれかのタグを持つ）<br/>
+          ・グループ間は <b>AND</b>（すべてのグループ条件を満たす）<br/>
+          ・除外タグは <b>NOT</b>（そのタグを持つ人を除外）
+        </div>
+
+        <div style="margin-top:10px;">
+          <div class="row">
+            <div class="col">
+              <label class="mini">保存された送信リストを使用</label>
+              <select id="savedLists">
+                <option value="">-- 選択してください --</option>
+              </select>
+              <div class="mini">※ 選ぶと条件が復元されます</div>
+            </div>
+            <div class="col">
+              <label class="mini">この条件を保存（新規/上書き）</label>
+              <input id="saveListName" type="text" placeholder="送信リスト名（例：男性 or 30代 AND 常連）" />
+              <button id="saveListBtn">この条件を保存</button>
+            </div>
+          </div>
+        </div>
+
         <div id="groupsContainer"></div>
         <button id="addGroupBtn">＋ 条件グループを追加</button>
 
@@ -107,48 +130,438 @@
         </div>
 
         <div style="margin-top:10px;">
-          <button id="sendBtn">送信</button>
+          <button id="sendBtn">送信（デモ）</button>
           <div id="sendMsg"></div>
         </div>
       </div>
     </div>
 
-    <h2 style="margin-top:22px;">送信ログ（デモ）</h2>
-    <div id="logsBox" class="muted">デモデータを表示します</div>
+    <h2 style="margin-top:22px;">送信ログ（最新200件）</h2>
+    <div id="logsBox" class="muted">読み込み中...</div>
   </div>
 </div>
 
 <script>
-  const DEMO = true;
+  // === DEMO MODE ===
+  // URL末尾に ?demo=1 を付けるとDEMO表示（今回は常にDEMOでもOK）
+  const DEMO = new URLSearchParams(location.search).get('demo') === '1' || true;
+
+  // --- state ---
+  let me = null;
+  let tags = [];
+  let groups = []; // [{includeTagIds:[], excludeTagIds:[]}, ...]
+  let demoLogs = [];
+
+  // --- helpers ---
+  function escapeHtml(s) {
+    return (s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function toIntArray(values) {
+    return Array.from(values || []).map(v => Number(v)).filter(n => Number.isFinite(n));
+  }
+  function normalizeGroups(gs) {
+    return (gs || [])
+      .map(g => ({
+        includeTagIds: toIntArray(g.includeTagIds),
+        excludeTagIds: toIntArray(g.excludeTagIds),
+      }))
+      .filter(g => g.includeTagIds.length > 0 || g.excludeTagIds.length > 0);
+  }
 
   function setModeBadge() {
     const b = document.getElementById('modeBadge');
-    b.textContent = 'DEMO';
-    b.classList.add('badge-demo');
+    if (DEMO) {
+      b.textContent = 'DEMO';
+      b.classList.add('badge-demo');
+    } else {
+      b.textContent = 'LIVE';
+    }
+  }
+
+  async function api(path, opts = {}) {
+    // DEMOはフロントだけで完結
+    return demoApi(path, opts);
+  }
+
+  // --- DEMO API ---
+  function demoApi(path, opts = {}) {
+    const method = (opts.method || 'GET').toUpperCase();
+    const body = opts.body ? JSON.parse(opts.body) : null;
+
+    // fake user/session
+    if (path === '/api/me' && method === 'GET') {
+      return Promise.resolve({
+        user: { store_name: 'ことぶき上峰店', store_id: 1, username: 'nakayama' }
+      });
+    }
+    if (path === '/api/login' && method === 'POST') {
+      return Promise.resolve({ ok: true });
+    }
+    if (path === '/api/logout' && method === 'POST') {
+      return Promise.resolve({ ok: true });
+    }
+
+    // fake tags
+    if (path === '/api/tags' && method === 'GET') {
+      return Promise.resolve([
+        { id: 1, tag_name: '常連' },
+        { id: 2, tag_name: '回遊客' },
+        { id: 3, tag_name: '1円P' },
+        { id: 4, tag_name: '4円P' },
+        { id: 5, tag_name: '5円S' },
+        { id: 6, tag_name: '高齢層' },
+        { id: 7, tag_name: '夕方来店' },
+        { id: 8, tag_name: '週末のみ' }
+      ]);
+    }
+
+    // fake saved lists
+    if (path === '/api/sending-lists' && method === 'GET') {
+      return Promise.resolve([
+        { id: 101, name: '回遊客 AND 夕方来店' },
+        { id: 102, name: '高齢層 AND 1円P' }
+      ]);
+    }
+    if (path.startsWith('/api/sending-lists/') && method === 'GET') {
+      const id = Number(path.split('/').pop());
+      if (id === 101) {
+        return Promise.resolve({ groups: [{ includeTagIds:[2,7], excludeTagIds:[] }] });
+      }
+      if (id === 102) {
+        return Promise.resolve({ groups: [{ includeTagIds:[6,3], excludeTagIds:[] }] });
+      }
+      return Promise.resolve({ groups: [] });
+    }
+    if (path === '/api/sending-lists' && method === 'POST') {
+      return Promise.resolve({ ok: true });
+    }
+
+    // fake count
+    if (path === '/api/recipient-count' && method === 'POST') {
+      const g = (body && body.groups) ? body.groups : [];
+      const n = Math.max(12, Math.min(238, 42 + (JSON.stringify(g).length % 80)));
+      return Promise.resolve({ count: n });
+    }
+
+    // fake send + logs
+    if (path === '/api/send-message' && method === 'POST') {
+      const recipients = Math.max(1, Number(document.getElementById('countLabel').textContent || '0'));
+      const msgText = body.messageText || '';
+      const log = {
+        sent_at: new Date().toISOString(),
+        status: 'success',
+        recipients_count: recipients,
+        message_content: JSON.stringify({ text: msgText }),
+        error_message: ''
+      };
+      demoLogs.unshift(log);
+      demoLogs = demoLogs.slice(0, 200);
+      return Promise.resolve({ recipients });
+    }
+    if (path === '/api/message-logs' && method === 'GET') {
+      if (!demoLogs.length) {
+        demoLogs = [
+          {
+            sent_at: new Date(Date.now() - 3600*1000).toISOString(),
+            status: 'success',
+            recipients_count: 58,
+            message_content: JSON.stringify({ text: '本日18時以降のご来店におすすめ情報を配信します！' }),
+            error_message: ''
+          },
+          {
+            sent_at: new Date(Date.now() - 6*3600*1000).toISOString(),
+            status: 'success',
+            recipients_count: 34,
+            message_content: JSON.stringify({ text: '週末の回遊客向け：気軽に遊べるおすすめをご案内' }),
+            error_message: ''
+          }
+        ];
+      }
+      return Promise.resolve(demoLogs);
+    }
+
+    return Promise.reject(new Error('DEMO: 未対応API ' + path));
+  }
+
+  // --- UI render ---
+  function renderGroups() {
+    const box = document.getElementById('groupsContainer');
+    box.innerHTML = '';
+
+    if (groups.length === 0) {
+      groups.push({ includeTagIds: [], excludeTagIds: [] });
+    }
+
+    groups.forEach((g, idx) => {
+      const div = document.createElement('div');
+      div.className = 'group';
+
+      const tagOptions = tags.map(t => `<option value="${t.id}">${escapeHtml(t.tag_name)}</option>`).join('');
+
+      div.innerHTML = `
+        <h4>グループ${idx + 1} <span class="mini">（この中はOR）</span></h4>
+        <div class="row">
+          <div class="col">
+            <label class="mini">含めるタグ（OR）</label>
+            <select multiple size="8" data-idx="${idx}" data-kind="include">
+              ${tagOptions}
+            </select>
+            <div class="mini">※ ここで複数選ぶと「A または B」になります</div>
+          </div>
+          <div class="col">
+            <label class="mini">除外するタグ（NOT）</label>
+            <select multiple size="8" data-idx="${idx}" data-kind="exclude">
+              ${tagOptions}
+            </select>
+            <div class="mini">※ このタグを持つ人は対象外になります</div>
+          </div>
+        </div>
+        <button data-action="removeGroup" data-idx="${idx}" class="danger">このグループを削除</button>
+        <div class="mini">※ グループ間はAND（全グループ条件を満たす人が対象）</div>
+      `;
+
+      box.appendChild(div);
+
+      const includeSel = div.querySelector(`select[data-kind="include"]`);
+      const excludeSel = div.querySelector(`select[data-kind="exclude"]`);
+      Array.from(includeSel.options).forEach(opt => { opt.selected = g.includeTagIds.includes(Number(opt.value)); });
+      Array.from(excludeSel.options).forEach(opt => { opt.selected = g.excludeTagIds.includes(Number(opt.value)); });
+
+      includeSel.addEventListener('change', () => {
+        const ids = Array.from(includeSel.selectedOptions).map(o => Number(o.value));
+        groups[idx].includeTagIds = ids;
+      });
+      excludeSel.addEventListener('change', () => {
+        const ids = Array.from(excludeSel.selectedOptions).map(o => Number(o.value));
+        groups[idx].excludeTagIds = ids;
+      });
+
+      const removeBtn = div.querySelector('button[data-action="removeGroup"]');
+      removeBtn.addEventListener('click', () => {
+        if (groups.length <= 1) {
+          groups = [{ includeTagIds: [], excludeTagIds: [] }];
+        } else {
+          groups.splice(idx, 1);
+        }
+        renderGroups();
+      });
+    });
+  }
+
+  function renderPreview() {
+    const text = document.getElementById('messageText').value || '';
+    const box = document.getElementById('previewBox');
+    if (!text.trim()) {
+      box.innerHTML = `<strong>プレビュー</strong><br/><span class="muted">ここに表示されます</span>`;
+      return;
+    }
+    box.innerHTML = `<strong>プレビュー</strong><br/>${escapeHtml(text).replace(/\n/g, '<br/>')}`;
   }
 
   function setLoggedInUI() {
     document.getElementById('loginSection').style.display = 'none';
     document.getElementById('appSection').style.display = 'block';
-    document.getElementById('storePill').textContent = '店舗：ことぶき上峰店';
-    document.getElementById('userPill').textContent = 'ユーザー：nakayama';
+    document.getElementById('storePill').textContent = `店舗：${me.user.store_name} (ID:${me.user.store_id})`;
+    document.getElementById('userPill').textContent = `ユーザー：${me.user.username}`;
   }
 
-  document.getElementById('loginBtn').addEventListener('click', () => {
+  function setLoggedOutUI() {
+    document.getElementById('loginSection').style.display = 'block';
+    document.getElementById('appSection').style.display = 'none';
+  }
+
+  // --- data load ---
+  async function loadMe() { me = await api('/api/me', { method: 'GET' }); }
+  async function loadTags() { tags = await api('/api/tags', { method: 'GET' }); }
+  async function loadSavedLists() {
+    const lists = await api('/api/sending-lists', { method: 'GET' });
+    const sel = document.getElementById('savedLists');
+    sel.innerHTML = `<option value="">-- 選択してください --</option>` + lists.map(l => `<option value="${l.id}">${escapeHtml(l.name)}</option>`).join('');
+  }
+  async function loadLogs() {
+    const logs = await api('/api/message-logs', { method: 'GET' });
+    const box = document.getElementById('logsBox');
+    if (!logs.length) {
+      box.innerHTML = `<div class="muted">送信履歴はありません。</div>`;
+      return;
+    }
+    box.innerHTML = logs.map(l => {
+      let text = '';
+      try { text = JSON.parse(l.message_content).text || ''; } catch { text = ''; }
+      return `
+        <div class="log">
+          <div><b>日時:</b> ${new Date(l.sent_at).toLocaleString()}</div>
+          <div><b>ステータス:</b> ${l.status === 'success' ? '成功' : '失敗'}</div>
+          <div><b>対象者数:</b> ${l.recipients_count}人</div>
+          <div><b>メッセージ:</b> ${escapeHtml(text)}</div>
+          ${l.error_message ? `<div class="error"><b>エラー:</b> ${escapeHtml(l.error_message)}</div>` : ``}
+        </div>
+      `;
+    }).join('');
+  }
+
+  // --- actions ---
+  async function doLogin() {
+    const u = document.getElementById('username').value;
+    const p = document.getElementById('password').value;
+    const msg = document.getElementById('loginMsg');
+    msg.textContent = '';
+    try {
+      await api('/api/login', { method: 'POST', body: JSON.stringify({ username: u, password: p }) });
+      await bootstrapApp();
+    } catch (e) {
+      msg.textContent = e.message || 'ログインに失敗しました';
+    }
+  }
+
+  async function doLogout() {
+    try { await api('/api/logout', { method: 'POST' }); } catch {}
+    me = null; tags = []; groups = [];
+    setLoggedOutUI();
+  }
+
+  function currentCriteriaMode() {
+    const listId = document.getElementById('savedLists').value;
+    if (listId) return { mode: 'saved', sendingListId: Number(listId) };
+    return { mode: 'adhoc', groups: normalizeGroups(groups) };
+  }
+
+  async function calcCount() {
+    document.getElementById('countLabel').textContent = '...';
+    const criteria = currentCriteriaMode();
+    try {
+      const data = await api('/api/recipient-count', { method: 'POST', body: JSON.stringify(criteria) });
+      document.getElementById('countLabel').textContent = String(data.count);
+    } catch (e) {
+      document.getElementById('countLabel').textContent = 'エラー';
+      document.getElementById('sendMsg').innerHTML = `<span class="error">${escapeHtml(e.message)}</span>`;
+    }
+  }
+
+  async function saveCurrentList() {
+    const name = document.getElementById('saveListName').value.trim();
+    const msg = document.getElementById('sendMsg');
+    msg.textContent = '';
+
+    if (!name) {
+      msg.innerHTML = `<span class="error">送信リスト名を入力してください。</span>`;
+      return;
+    }
+
+    const payload = { name, groups: normalizeGroups(groups) };
+    if (!payload.groups.length) {
+      msg.innerHTML = `<span class="error">条件グループにタグを1つ以上指定してください。</span>`;
+      return;
+    }
+
+    try {
+      await api('/api/sending-lists', { method: 'POST', body: JSON.stringify(payload) });
+      await loadSavedLists();
+      msg.innerHTML = `保存しました：<b>${escapeHtml(name)}</b>`;
+    } catch (e) {
+      msg.innerHTML = `<span class="error">${escapeHtml(e.message)}</span>`;
+    }
+  }
+
+  async function onSelectSavedList() {
+    const listId = document.getElementById('savedLists').value;
+    const msg = document.getElementById('sendMsg');
+    msg.textContent = '';
+
+    if (!listId) return;
+
+    try {
+      const data = await api(`/api/sending-lists/${Number(listId)}`, { method: 'GET' });
+      groups = (data.groups || []).map(g => ({
+        includeTagIds: toIntArray(g.includeTagIds),
+        excludeTagIds: toIntArray(g.excludeTagIds),
+      }));
+      renderGroups();
+      await calcCount();
+    } catch (e) {
+      msg.innerHTML = `<span class="error">${escapeHtml(e.message)}</span>`;
+    }
+  }
+
+  async function doSend() {
+    const msgBox = document.getElementById('sendMsg');
+    msgBox.textContent = '';
+
+    const text = document.getElementById('messageText').value.trim();
+    if (!text) {
+      msgBox.innerHTML = `<span class="error">メッセージを入力してください。</span>`;
+      return;
+    }
+
+    const count = Number(document.getElementById('countLabel').textContent || '0');
+    if (!Number.isFinite(count) || count <= 0) {
+      msgBox.innerHTML = `<span class="error">対象者数が0です（先に計算してください）。</span>`;
+      return;
+    }
+
+    const criteria = currentCriteriaMode();
+    const storeName = me?.user?.store_name || '店舗';
+    const listName = document.getElementById('savedLists').value
+      ? (document.getElementById('savedLists').selectedOptions[0]?.textContent || '')
+      : '(未保存の条件)';
+
+    const confirmText =
+      `【最終確認】\n` +
+      `店舗：${storeName}\n` +
+      `対象者数：${count}人\n` +
+      `送信リスト：${listName}\n\n` +
+      `この内容で送信しますか？（※デモ：実送信されません）`;
+
+    if (!window.confirm(confirmText)) {
+      msgBox.innerHTML = `<span class="muted">送信をキャンセルしました。</span>`;
+      return;
+    }
+
+    try {
+      const payload = { ...criteria, messageText: text };
+      const data = await api('/api/send-message', { method: 'POST', body: JSON.stringify(payload) });
+      msgBox.innerHTML = `送信しました（デモ）。対象者数：<b>${data.recipients}</b>人`;
+      await loadLogs();
+    } catch (e) {
+      msgBox.innerHTML = `<span class="error">${escapeHtml(e.message)}</span>`;
+      await loadLogs();
+    }
+  }
+
+  async function bootstrapApp() {
+    await loadMe();
     setLoggedInUI();
-  });
+    await loadTags();
+    await loadSavedLists();
+    groups = [{ includeTagIds: [2], excludeTagIds: [] }]; // demo: 回遊客
+    renderGroups();
+    document.getElementById('messageText').value = '【夕方の回遊客向け】\nいま寄るなら “ここ” が分かる情報を配信します。';
+    renderPreview();
+    await loadLogs();
+  }
 
-  document.getElementById('logoutBtn').addEventListener('click', () => {
-    location.reload();
+  // --- bind ---
+  document.getElementById('loginBtn').addEventListener('click', doLogin);
+  document.getElementById('logoutBtn').addEventListener('click', doLogout);
+  document.getElementById('previewBtn').addEventListener('click', renderPreview);
+  document.getElementById('addGroupBtn').addEventListener('click', () => {
+    groups.push({ includeTagIds: [], excludeTagIds: [] });
+    renderGroups();
   });
+  document.getElementById('countBtn').addEventListener('click', calcCount);
+  document.getElementById('sendBtn').addEventListener('click', doSend);
+  document.getElementById('saveListBtn').addEventListener('click', saveCurrentList);
+  document.getElementById('savedLists').addEventListener('change', onSelectSavedList);
 
-  document.getElementById('previewBtn').addEventListener('click', () => {
-    const text = document.getElementById('messageText').value || '';
-    document.getElementById('previewBox').innerHTML =
-      '<strong>プレビュー</strong><br/>' + text.replace(/\n/g,'<br/>');
-  });
-
-  setModeBadge();
+  // --- initial ---
+  (async () => {
+    setModeBadge();
+    try {
+      await bootstrapApp();
+    } catch {
+      setLoggedOutUI();
+    }
+  })();
 </script>
 </body>
 </html>
